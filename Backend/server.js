@@ -201,7 +201,7 @@ const userAgents = [
 const ipAddresses = ['192.168.1.101', '10.0.0.2', '172.16.0.5'];
 
 const log = (msg, level = 'info') => {
-  const timestamp = new Date().toISOString();
+  const timestamp = new Date().toLocaleString(); 
   console[level](`[${timestamp}] ${msg}`);
 };
 
@@ -294,9 +294,12 @@ app.post('/scrape', async (req, res) => {
     // Count success and failure
     const successCount = requestStatuses.filter(r => r.status === 'succeeded').length;
     const failureCount = requestStatuses.filter(r => r.status === 'failed').length;
-
+    const total = successCount + failureCount;
+    const successPercentage = total > 0 ? ((successCount / total) * 100).toFixed(2) : '0.00';
+    
     console.log(`✅ Total Successful: ${successCount}`);
     console.log(`❌ Total Failed: ${failureCount}`);
+    console.log(`📈 Success Percentage: ${successPercentage}%`);
     
   } catch (err) {
     log(`❌ Unhandled Error: ${err.message}`, 'error');
