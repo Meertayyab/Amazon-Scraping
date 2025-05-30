@@ -2,14 +2,14 @@ const { google } = require("googleapis");
 
 async function clearPricesAndStock() {
   const auth = new google.auth.GoogleAuth({
-    keyFile: "credential.json",
+    keyFile: "credentials.json",
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
 
   const client = await auth.getClient();
   const sheets = google.sheets({ version: "v4", auth: client });
 
-  const SHEET_ID = "1b2sFjxLwg8CDnMlgNdtNjgXuC7KNEGS22p6PsZmQLQM";
+  const SHEET_ID = "1hIloaDiejbHcaOVEK2_Wk7LfEIk-8nJHbTLp5b8TmE4";
   const SHEET_NAME = "Sheet1";
 
   // Clearing both price (C column) and stock (D column)
@@ -19,6 +19,8 @@ async function clearPricesAndStock() {
     `${SHEET_NAME}!E2:E`,
     `${SHEET_NAME}!F2:F`,
     `${SHEET_NAME}!G2:G`,
+    `${SHEET_NAME}!H2:H`,
+    `${SHEET_NAME}!I2:I`,
   ];
 
   try {
