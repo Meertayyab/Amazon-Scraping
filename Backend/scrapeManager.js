@@ -56,19 +56,39 @@ async function checkIpApi(url) {
 async function isVpnWorking() {
   // APIs to try one by one to avoid rate-limit problem
   const apis = [
-    "https://ipapi.co/json",
     "https://ipinfo.io/json",
     "https://api.myip.com",
   ];
 
-  for (const api of apis) {
-    const data = await checkIpApi(api);
-    if (data) {
-      console.log(
-        `✅ VPN IP detected from ${api}:`,
-        data.country || data.country_code || data.ip
-      );
-      return true; // VPN considered working if any API works without rate-limit
+  // for (const api of apis) {
+  //   const data = await checkIpApi(api);
+  //   if (data) {
+  //     console.log(
+  //       `✅ American VPN detected from ${api}:`,
+  //       (data.country === 'US' || data.country === 'United States') || data.country_code === 'US'
+  //     );
+  //     return true; // VPN considered working if any API works without rate-limit
+  //   }
+  // }
+   for (const api of apis) {
+    try {
+      const data = await checkIpApi(api); // Await works fine here
+
+      console.log("Fetched data from", api, "=>", data);
+
+      if (
+        data &&
+        (data.country === "US" ||
+         data.country === "United States" ||
+         data.country_code === "US")
+      ) {
+        console.log(`✅ American VPN detected from ${api}`);
+        return true;
+      }else{
+        console.log(`Found Country ${data.country}`)
+      }
+    } catch (err) {
+      console.warn(`❌ Error checking ${api}:`, err.message);
     }
   }
 
