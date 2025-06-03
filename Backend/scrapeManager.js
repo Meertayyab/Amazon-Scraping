@@ -2,19 +2,114 @@
 const { google } = require("googleapis");
 const { scrapePriceWithRetry, RequestQueue } = require("./Asin");
 const moment = require("moment");
-const {SHEETS} = require("./configSheet");
-
-
-
+const { SHEETS } = require("./configSheet");
+const fetch = require("node-fetch");
+const AbortController = require("abort-controller");
 
 //AUS ACCOUNT PRE_URL
 //const PRE_URL = "https://amazon.com.au/dp/";
 
+async function isConnected() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
 
+  try {
+    const res = await fetch("https://www.google.com", {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    return res.ok;
+  } catch (err) {
+    clearTimeout(timeout);
+    console.warn("Internet check failed:", err.message);
+    return false;
+  }
+}
 
+// Helper function to try an IP API with timeout and rate-limit handling
+async function checkIpApi(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
 
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
 
+    if (!res.ok) {
+      return null;
+    }
 
+    const data = await res.json();
+    if (data.error || data.reason === "RateLimited") {
+      console.warn(`Rate limit or error from ${url}:`, data);
+      return null;
+    }
+
+    return data;
+  } catch (err) {
+    clearTimeout(timeout);
+    console.warn(`API check failed for ${url}:`, err.message);
+    return null;
+  }
+}
+
+async function isVpnWorking() {
+  // APIs to try one by one to avoid rate-limit problem
+  const apis = [
+    "https://ipapi.co/json",
+    "https://ipinfo.io/json",
+    "https://api.myip.com",
+  ];
+
+  for (const api of apis) {
+    const data = await checkIpApi(api);
+    if (data) {
+      console.log(
+        `✅ VPN IP detected from ${api}:`,
+        data.country || data.country_code || data.ip
+      );
+      return true; // VPN considered working if any API works without rate-limit
+    }
+  }
+
+  console.warn("All IP APIs rate-limited or failed.");
+  return false;
+}
+
+async function waitForConnectivity(maxRetries = 6, delayMs = 5 * 60 * 1000) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(
+      `🔍 Checking internet & VPN [Attempt ${attempt}/${maxRetries}]...`
+    );
+    const hasInternet = await isConnected();
+    if (!hasInternet) {
+      console.warn(
+        `🚫 Internet not connected. Retrying in ${delayMs / 60000} minutes...`
+      );
+    } else {
+      const hasVpn = await isVpnWorking();
+      if (hasVpn) {
+        console.log("✅ Internet and VPN confirmed.");
+        return true;
+      } else {
+        console.warn(
+          `🚫 VPN not working or blocked. Retrying in ${
+            delayMs / 60000
+          } minutes...`
+        );
+      }
+    }
+
+    if (attempt < maxRetries) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  console.error(
+    "❌ Connectivity check failed after multiple retries. Skipping operation."
+  );
+  return false;
+}
 
 // Constants
 const PRE_URL = "https://amazon.com/dp/";
@@ -34,40 +129,61 @@ function getCol(index) {
 function normalizeStock(stockText) {
   const stock = stockText?.trim().toLowerCase() || "";
   const stockIndicators = [
-    "in stock", "only", "left in stock", "nur noch", "vorrätig",
-    "available to ship", "lieferbar", "versandbereit",
-    "gewöhnlich versandfertig in", "usually ships within"
+    "in stock",
+    "only",
+    "left in stock",
+    "nur noch",
+    "vorrätig",
+    "available to ship",
+    "lieferbar",
+    "versandbereit",
+    "gewöhnlich versandfertig in",
+    "usually ships within",
   ];
   const outOfStockIndicators = ["out of stock", "nicht auf lager"];
 
-  if (stockIndicators.some(s => stock.includes(s))) return "In Stock";
-  if (outOfStockIndicators.some(s => stock.includes(s))) return "Out of Stock";
+  if (stockIndicators.some((s) => stock.includes(s))) return "In Stock";
+  if (outOfStockIndicators.some((s) => stock.includes(s)))
+    return "Out of Stock";
   return "Out of Stock";
 }
 
 // Calculates how far the delivery date is from today and returns readable status
 function checkDeliveryStatus(deliveryTime) {
-  if (!deliveryTime || deliveryTime.trim() === "" || deliveryTime === "Delivery Not Found") return 0;
+  if (
+    !deliveryTime ||
+    deliveryTime.trim() === "" ||
+    deliveryTime === "Delivery Not Found"
+  )
+    return 0;
 
   const today = moment().startOf("day");
   const currentYear = today.year();
 
   // Match date range (e.g., May 12 – May 15)
-  const rangeMatch = deliveryTime.match(/([A-Za-z]+\s\d{1,2})\s*(?:–|to)\s*([A-Za-z]+\s\d{1,2})/i);
+  const rangeMatch = deliveryTime.match(
+    /([A-Za-z]+\s\d{1,2})\s*(?:–|to)\s*([A-Za-z]+\s\d{1,2})/i
+  );
   // Match single date (e.g., May 15)
   const singleMatch = deliveryTime.match(/^([A-Za-z]+\s\d{1,2})$/i);
 
   if (rangeMatch) {
-    const end = moment(`${rangeMatch[2]} ${currentYear}`, "MMM D YYYY").startOf("day");
+    const end = moment(`${rangeMatch[2]} ${currentYear}`, "MMM D YYYY").startOf(
+      "day"
+    );
     if (end.isBefore(today)) end.add(1, "year");
     const diffDays = end.diff(today, "days");
     return `Delivery in ${diffDays} days`;
   }
 
   if (singleMatch) {
-    const deliveryDate = moment(`${singleMatch[1]} ${currentYear}`, "MMM D YYYY").startOf("day");
+    const deliveryDate = moment(
+      `${singleMatch[1]} ${currentYear}`,
+      "MMM D YYYY"
+    ).startOf("day");
     const diffDays = deliveryDate.diff(today, "days");
-    if (diffDays > 0) return `Delivery in ${diffDays} ${diffDays === 1 ? "day" : "days"}`;
+    if (diffDays > 0)
+      return `Delivery in ${diffDays} ${diffDays === 1 ? "day" : "days"}`;
     if (diffDays === 0) return "Today is the delivery date";
     return "Delivery Date is in the Past";
   }
@@ -77,6 +193,10 @@ function checkDeliveryStatus(deliveryTime) {
 
 async function compareAndUpdatePrices(sheetConfig) {
   console.log(`📄 Starting update for Sheet ID: ${sheetConfig.id}`);
+
+  const ready = await waitForConnectivity();
+  if (!ready) return;
+
   const auth = new google.auth.GoogleAuth({
     keyFile: sheetConfig.credentialFile,
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
@@ -108,7 +228,7 @@ async function compareAndUpdatePrices(sheetConfig) {
     deliveryStatus: headers.indexOf("delivery_status"),
   };
 
-  if (Object.values(indices).some(i => i === -1)) {
+  if (Object.values(indices).some((i) => i === -1)) {
     console.error("❌ Required columns missing.");
     return;
   }
@@ -121,75 +241,98 @@ async function compareAndUpdatePrices(sheetConfig) {
 
     const results = await Promise.all(
       batch.map((row, i) =>
-      queue.add(async () => {
-        const asin = row[indices.asin];
-        const oldPrice = row[indices.price] || "";
-        const oldStock = row[indices.stock] || "";
-        const oldSeller = row[indices.seller] || "";
-        const oldDeliveryTime = row[indices.deliveryTime] || "";
+        queue.add(async () => {
+          const asin = row[indices.asin];
+          const oldPrice = row[indices.price] || "";
+          const oldStock = row[indices.stock] || "";
+          const oldSeller = row[indices.seller] || "";
+          const oldDeliveryTime = row[indices.deliveryTime] || "";
 
-        const url = `${PRE_URL}${asin}/ref=olp-opf-redir?aod=1`;
-        const { price, stock, seller, deliveryTime } = await scrapePriceWithRetry(url);
+          const url = `${PRE_URL}${asin}/ref=olp-opf-redir?aod=1`;
+          const { price, stock, seller, deliveryTime } =
+            await scrapePriceWithRetry(url);
 
-        const newStock = normalizeStock(stock);
-        const cleanPrice = price?.replace("$", "").trim() || "";
-        const newSeller = seller || "Seller Not Found";
-        const newDelivery = deliveryTime?.trim() || "";
-        const deliveryStatus = checkDeliveryStatus(newDelivery);
+          const newStock = normalizeStock(stock);
+          const cleanPrice = price?.replace("$", "").trim() || "";
+          const newSeller = seller || "Seller Not Found";
+          const newDelivery = deliveryTime?.trim() || "";
+          const deliveryStatus = checkDeliveryStatus(newDelivery);
 
-        const invalidPrice = ["0", "Unavailable", "Not Found", "Error", "-1"];
-        const isDeliveryMissing = !deliveryStatus || deliveryStatus === "Delivery Not Found";
-        // const deliveryExceeded = !deliveryStatus || deliveryStatus.includes("Delivery in") && parseInt(deliveryStatus.match(/\d+/)?.[0] || "0") > 10;
-        let deliveryExceeded = false;
+          const invalidPrice = ["0", "Unavailable", "Not Found", "Error", "-1"];
+          const isDeliveryMissing =
+            !deliveryStatus || deliveryStatus === "Delivery Not Found";
+          // const deliveryExceeded = !deliveryStatus || deliveryStatus.includes("Delivery in") && parseInt(deliveryStatus.match(/\d+/)?.[0] || "0") > 10;
+          let deliveryExceeded = false;
 
-if (!isDeliveryMissing) {
-  const match = deliveryStatus.match(/\d+/);
-  const deliveryDays = match ? parseInt(match[0], 10) : 0;
-  if (deliveryDays > 10) {
-    deliveryExceeded = true;
-  }
-} else {
-  deliveryExceeded = true;
-}
+          if (!isDeliveryMissing) {
+            const match = deliveryStatus.match(/\d+/);
+            const deliveryDays = match ? parseInt(match[0], 10) : 0;
+            if (deliveryDays > 10) {
+              deliveryExceeded = true;
+            }
+          } else {
+            deliveryExceeded = true;
+          }
 
+          if (invalidPrice.includes(cleanPrice)) {
+            return {
+              row: rowStart + i,
+              values: [
+                0,
+                0,
+                1,
+                newStock,
+                newSeller,
+                newDelivery,
+                deliveryStatus,
+              ],
+              changed: true,
+            };
+          }
 
-        if (invalidPrice.includes(cleanPrice)) {
-          return { row: rowStart + i, values: [0, 0, 1, newStock, newSeller, newDelivery, deliveryStatus], changed: true };
-        }
+          const isPriceChanged = Number(cleanPrice) !== Number(oldPrice);
+          const isStockChanged =
+            String(newStock).trim() !== String(oldStock).trim();
+          const isSellerChanged =
+            String(newSeller).trim().toLowerCase() !==
+            String(oldSeller).trim().toLowerCase();
+          const isDeliveryChanged =
+            String(newDelivery).trim().toLowerCase() !==
+            String(oldDeliveryTime).trim().toLowerCase();
 
-     
+          if (
+            !isPriceChanged &&
+            !isStockChanged &&
+            !isSellerChanged &&
+            !isDeliveryChanged &&
+            !deliveryExceeded
+          ) {
+            return { row: rowStart + i, changed: false };
+          }
 
-const isPriceChanged = Number(cleanPrice) !== Number(oldPrice);
-const isStockChanged = String(newStock).trim() !== String(oldStock).trim();
-const isSellerChanged = String(newSeller).trim().toLowerCase() !== String(oldSeller).trim().toLowerCase();
-const isDeliveryChanged = String(newDelivery).trim().toLowerCase() !== String(oldDeliveryTime).trim().toLowerCase();
+          const forceQtyStatus =
+            newStock === "Out of Stock" &&
+            deliveryStatus === "Delivery Not Found";
+          const qtyStatus = deliveryExceeded || forceQtyStatus ? 1 : 0;
 
+          return {
+            row: rowStart + i,
+            values: [
+              Number(cleanPrice),
+              isPriceChanged ? 1 : 0,
+              qtyStatus,
+              newStock,
+              newSeller,
+              newDelivery,
+              deliveryStatus,
+            ],
+            changed: true,
+          };
+        })
+      )
+    );
 
-
-        if (!isPriceChanged && !isStockChanged && !isSellerChanged && !isDeliveryChanged && !deliveryExceeded) {
-          return { row: rowStart + i, changed: false };
-        }
-
-const forceQtyStatus = newStock === 'Out of Stock' && deliveryStatus === 'Delivery Not Found';
-const qtyStatus = deliveryExceeded || forceQtyStatus ? 1 : 0;
-
-        return {
-          row: rowStart + i,
-          values: [
-            Number(cleanPrice),
-            isPriceChanged ? 1 : 0,
-            qtyStatus,
-            newStock,
-            newSeller,
-            newDelivery,
-            deliveryStatus
-          ],
-          changed: true
-        };
-      })
-    ));
-
-    const updatedRows = results.filter(r => r.changed);
+    const updatedRows = results.filter((r) => r.changed);
     if (updatedRows.length === 0) continue;
 
     const rangeCols = [
@@ -203,7 +346,9 @@ const qtyStatus = deliveryExceeded || forceQtyStatus ? 1 : 0;
     ];
 
     for (const { row, values } of updatedRows) {
-      const range = `${sheetConfig.name}!${rangeCols[0]}${row}:${rangeCols[rangeCols.length - 1]}${row}`;
+      const range = `${sheetConfig.name}!${rangeCols[0]}${row}:${
+        rangeCols[rangeCols.length - 1]
+      }${row}`;
       try {
         await sheets.spreadsheets.values.update({
           spreadsheetId: sheetConfig.id,
@@ -239,14 +384,20 @@ async function runAllSheets(sheets, maxConcurrent) {
       const limit = (await import("p-limit")).default(maxConcurrent);
       const total = sheets.length;
 
-      console.log(`🚀 Starting processing ${total} sheets with concurrency ${maxConcurrent}`);
+      console.log(
+        `🚀 Starting processing ${total} sheets with concurrency ${maxConcurrent}`
+      );
 
       const tasks = sheets.map((sheet, index) =>
         limit(async () => {
           const sheetStart = Date.now();
           console.log(`▶️ Starting sheet ${sheet.id} (${index + 1}/${total})`);
           await compareAndUpdatePrices(sheet);
-          console.log(`✅ Finished sheet ${sheet.id} in ${(Date.now() - sheetStart) / 1000}s`);
+          console.log(
+            `✅ Finished sheet ${sheet.id} in ${
+              (Date.now() - sheetStart) / 1000
+            }s`
+          );
         })
       );
 
@@ -289,5 +440,5 @@ async function runSingleSheet(sheetId) {
 module.exports = {
   isRunning,
   runAllSheets,
-  runSingleSheet
+  runSingleSheet,
 };
