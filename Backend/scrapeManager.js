@@ -6,9 +6,14 @@ const { SHEETS } = require("./configSheet");
 const fetch = require("node-fetch");
 const AbortController = require("abort-controller");
 
-//AUS ACCOUNT PRE_URL
-//const PRE_URL = "https://amazon.com.au/dp/";
 
+
+
+/**
+ * Checks if the internet is reachable by attempting to fetch Google homepage.
+ * Times out after 5 seconds to avoid hanging.
+ * @returns {Promise<boolean>} True if internet is connected, false otherwise.
+ */
 async function isConnected() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -26,8 +31,13 @@ async function isConnected() {
   }
 }
 
-// Helper function to try an IP API with timeout and rate-limit handling
-async function checkIpApi(url) {
+/**
+ * Makes a single API request to an IP geolocation API to get VPN region.
+ * Handles timeouts and rate limits.
+ * @param {string} url - The API URL to call.
+ * @returns {Promise<object|null>} Parsed JSON or null if failed.
+ */
+  async function checkIpApi(url) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
 
@@ -53,23 +63,18 @@ async function checkIpApi(url) {
   }
 }
 
+/**
+ * Verifies if the VPN is currently routing through a US IP address.
+ * Uses multiple IP geolocation APIs to avoid being blocked or rate-limited.
+ * @returns {Promise<boolean>} True if VPN is a US IP, false otherwise.
+ */
+
 async function isVpnWorking() {
   // APIs to try one by one to avoid rate-limit problem
   const apis = [
     "https://ipinfo.io/json",
     "https://api.myip.com",
   ];
-
-  // for (const api of apis) {
-  //   const data = await checkIpApi(api);
-  //   if (data) {
-  //     console.log(
-  //       `✅ American VPN detected from ${api}:`,
-  //       (data.country === 'US' || data.country === 'United States') || data.country_code === 'US'
-  //     );
-  //     return true; // VPN considered working if any API works without rate-limit
-  //   }
-  // }
    for (const api of apis) {
     try {
       const data = await checkIpApi(api); // Await works fine here
@@ -79,12 +84,20 @@ async function isVpnWorking() {
       if (
         data &&
         (data.country === "US" ||
-         data.country === "United States" ||
-         data.country_code === "US")
+         data.country === "United States")
       ) {
         console.log(`✅ American VPN detected from ${api}`);
         return true;
-      }else{
+      }
+      //   if (
+      //   data &&
+      //   (data.country === "AU" ||
+      //    data.country === "Australia")
+      // ) {
+      //   console.log(`✅ Australian VPN detected from ${api}`);
+      //   return true;
+      // }
+      else{
         console.log(`Found Country ${data.country}`)
       }
     } catch (err) {
@@ -95,6 +108,15 @@ async function isVpnWorking() {
   console.warn("All IP APIs rate-limited or failed.");
   return false;
 }
+
+
+/**
+ * Repeatedly checks internet and VPN connectivity.
+ * Waits and retries up to `maxRetries` times if either fails.
+ * @param {number} maxRetries - Max retry attempts before giving up.
+ * @param {number} delayMs - Delay in milliseconds between retries.
+ * @returns {Promise<boolean>} True if connectivity confirmed, false if not.
+ */
 
 async function waitForConnectivity(maxRetries = 6, delayMs = 5 * 60 * 1000) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -132,10 +154,15 @@ async function waitForConnectivity(maxRetries = 6, delayMs = 5 * 60 * 1000) {
 }
 
 // Constants
-const PRE_URL = "https://amazon.com/dp/";
+const PRE_URL = "https://amazon.com.au/dp/";
+// const PRE_URL = "https://amazon.com/dp/";
 const MAX_CONCURRENT = process.env.MAX_CONCURRENT;
 
-// Converts column index to column letter (e.g., 0 -> A, 27 -> AB)
+/**
+ * Converts a numeric column index into a Google Sheets column letter (e.g., 0 -> A, 27 -> AB).
+ * @param {number} index - Column index.
+ * @returns {string} Column letter.
+ */
 function getCol(index) {
   let col = "";
   while (index >= 0) {
@@ -145,7 +172,11 @@ function getCol(index) {
   return col;
 }
 
-// Normalizes raw stock text into "In Stock" or "Out of Stock"
+/**
+ * Converts raw stock text from the website into a normalized status: "In Stock" or "Out of Stock".
+ * @param {string} stockText - Raw stock availability text.
+ * @returns {string} Normalized stock status.
+ */
 function normalizeStock(stockText) {
   const stock = stockText?.trim().toLowerCase() || "";
   const stockIndicators = [
@@ -168,7 +199,13 @@ function normalizeStock(stockText) {
   return "Out of Stock";
 }
 
-// Calculates how far the delivery date is from today and returns readable status
+/**
+ * Checks and describes the delivery status based on estimated delivery date string.
+ * Converts human-readable delivery date into actionable info like "Delivery in X days".
+ * @param {string} deliveryTime - Raw delivery time string from Amazon.
+ * @returns {string|number} Delivery status or 0 if not found.
+ */
+
 function checkDeliveryStatus(deliveryTime) {
   if (
     !deliveryTime ||
@@ -180,27 +217,29 @@ function checkDeliveryStatus(deliveryTime) {
   const today = moment().startOf("day");
   const currentYear = today.year();
 
-  // Match date range (e.g., May 12 – May 15)
+  // ✅ Normalize "8 June" to "June 8"
+  deliveryTime = deliveryTime.replace(
+    /\b(\d{1,2})\s([A-Za-z]+)\b/g,
+    (_, day, month) => `${month} ${day}`
+  );
+
+  // Match date range (e.g., June 8 – June 10)
   const rangeMatch = deliveryTime.match(
     /([A-Za-z]+\s\d{1,2})\s*(?:–|to)\s*([A-Za-z]+\s\d{1,2})/i
   );
-  // Match single date (e.g., May 15)
+
+  // Match single date (e.g., June 8)
   const singleMatch = deliveryTime.match(/^([A-Za-z]+\s\d{1,2})$/i);
 
   if (rangeMatch) {
-    const end = moment(`${rangeMatch[2]} ${currentYear}`, "MMM D YYYY").startOf(
-      "day"
-    );
+    const end = moment(`${rangeMatch[2]} ${currentYear}`, "MMM D YYYY").startOf("day");
     if (end.isBefore(today)) end.add(1, "year");
     const diffDays = end.diff(today, "days");
     return `Delivery in ${diffDays} days`;
   }
 
   if (singleMatch) {
-    const deliveryDate = moment(
-      `${singleMatch[1]} ${currentYear}`,
-      "MMM D YYYY"
-    ).startOf("day");
+    const deliveryDate = moment(`${singleMatch[1]} ${currentYear}`, "MMM D YYYY").startOf("day");
     const diffDays = deliveryDate.diff(today, "days");
     if (diffDays > 0)
       return `Delivery in ${diffDays} ${diffDays === 1 ? "day" : "days"}`;
@@ -210,6 +249,16 @@ function checkDeliveryStatus(deliveryTime) {
 
   return "Delivery Not Found";
 }
+
+
+
+/**
+ * Main logic to read a specific Google Sheet, fetch ASIN product data,
+ * compare it to existing data, and update changed rows.
+ * Handles price, stock, seller, and delivery details.
+ * @param {object} sheetConfig - Sheet configuration object.
+ */
+
 
 async function compareAndUpdatePrices(sheetConfig) {
   console.log(`📄 Starting update for Sheet ID: ${sheetConfig.id}`);
@@ -271,7 +320,6 @@ async function compareAndUpdatePrices(sheetConfig) {
           const url = `${PRE_URL}${asin}/ref=olp-opf-redir?aod=1`;
           const { price, stock, seller, deliveryTime } =
             await scrapePriceWithRetry(url);
-
           const newStock = normalizeStock(stock);
           const cleanPrice = price?.replace("$", "").trim() || "";
           const newSeller = seller || "Seller Not Found";
@@ -281,7 +329,6 @@ async function compareAndUpdatePrices(sheetConfig) {
           const invalidPrice = ["0", "Unavailable", "Not Found", "Error", "-1"];
           const isDeliveryMissing =
             !deliveryStatus || deliveryStatus === "Delivery Not Found";
-          // const deliveryExceeded = !deliveryStatus || deliveryStatus.includes("Delivery in") && parseInt(deliveryStatus.match(/\d+/)?.[0] || "0") > 10;
           let deliveryExceeded = false;
 
           if (!isDeliveryMissing) {
@@ -386,13 +433,28 @@ async function compareAndUpdatePrices(sheetConfig) {
   console.log(`🎯 Finished sheet: ${sheetConfig.id}`);
 }
 
+
+// Flags to track if a scrape job is currently running
 let IsRunning = false;
 let runningPromise = null;
+
+/**
+ * Returns whether the scraper is currently running or not.
+ * @returns {boolean}
+ */
 
 function isRunning() {
   return IsRunning;
 }
 
+
+
+/**
+ * Executes all Google Sheet scraping tasks with concurrency limit.
+ * Ensures no overlap by guarding with `IsRunning` flag.
+ * @param {Array} sheets - List of sheet configurations.
+ * @param {number} maxConcurrent - Max concurrent sheets to process.
+ */
 async function runAllSheets(sheets, maxConcurrent) {
   if (IsRunning) {
     throw new Error("Scraper is already running");
@@ -461,4 +523,8 @@ module.exports = {
   isRunning,
   runAllSheets,
   runSingleSheet,
+  isConnected,
+  isVpnWorking,
+  waitForConnectivity,
+  
 };

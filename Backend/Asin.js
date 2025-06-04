@@ -1,7 +1,10 @@
 const puppeteer = require("puppeteer"); // Use the full puppeteer package
 const faker = require("faker"); // Import faker for randomization
 
+
+
 // ------------------- Request Queue --------------------
+// Handles concurrent requests with a limit
 class RequestQueue {
   constructor(maxConcurrent) {
     this.queue = [];
@@ -9,6 +12,8 @@ class RequestQueue {
     this.maxConcurrent = maxConcurrent;
   }
 
+
+    // Add a new function to the queue and resolve when it completes
   async add(requestFn) {
     return new Promise((resolve, reject) => {
       this.queue.push({ requestFn, resolve, reject });
@@ -16,6 +21,7 @@ class RequestQueue {
     });
   }
 
+    // Run the next function in the queue if concurrency allows
   async runNext() {
     if (this.running >= this.maxConcurrent || this.queue.length === 0) return;
     const { requestFn, resolve, reject } = this.queue.shift();
@@ -31,6 +37,9 @@ class RequestQueue {
     }
   }
 }
+
+// ---------------- Proxy Configuration ----------------
+// Rotating list of proxies for optional use
 
 const proxies = [
   {
@@ -95,12 +104,15 @@ const proxies = [
   },
 ];
 
+
+
+// Randomly select one proxy from the list
 function getRandomProxy() {
   return proxies[Math.floor(Math.random() * proxies.length)];
 }
 
-// amazon scraper main function
-
+// ---------------- Main Scraper Function ----------------
+// Retry logic and proxy support for Amazon price/seller/delivery scraping
 async function scrapePriceWithRetry(url, attempt = 1) {
   const useProxy = false; // Set to true if you want to use proxy for specific cases
   const proxy = useProxy ? getRandomProxy() : null; // Use proxy only if required
@@ -115,6 +127,7 @@ async function scrapePriceWithRetry(url, attempt = 1) {
   let browser;
 
   try {
+        // Launch browser with or without proxy
     browser = await puppeteer.launch({
       headless: true,
       args: launchArgs,
@@ -122,6 +135,8 @@ async function scrapePriceWithRetry(url, attempt = 1) {
 
     const page = await browser.newPage();
 
+
+    // Authenticate proxy credentials if proxy is used
     if (proxy) {
       await page.authenticate({
         username: proxy.username,
@@ -129,7 +144,7 @@ async function scrapePriceWithRetry(url, attempt = 1) {
       });
     }
 
-    // Randomize user agent, language, and other browser settings
+    // ---------------- Setup Page Headers/User-Agent ----------------
     await page.setUserAgent(faker.internet.userAgent());
     await page.setViewport({
       width: faker.datatype.number({ min: 1024, max: 1920 }),
@@ -154,6 +169,8 @@ async function scrapePriceWithRetry(url, attempt = 1) {
     // Delay utility
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+
+        // ---------------- Price Extraction ----------------
     async function extractPrice(page) {
       const priceSelectors = [
         '::-p-xpath(//*[@id="aod-price-0"]/div/span[1])',
@@ -171,7 +188,7 @@ async function scrapePriceWithRetry(url, attempt = 1) {
       const maxAttempts = 6;
       const retryInterval = 500;
 
-      // Helper: try to get textContent from selector with retry
+      // Try each selector with retry logic
       async function trySelector(selector, attempts = maxAttempts) {
         for (let attempt = 1; attempt <= attempts; attempt++) {
           try {
@@ -198,7 +215,7 @@ async function scrapePriceWithRetry(url, attempt = 1) {
         }
       }
 
-      // Fallback combined whole + fraction strategy
+      // Try fallback split price (whole + fraction)
       const wholeSelector =
         '::-p-xpath(//*[@id="aod-price-0"]/div[1]/span[3]/span[2]/span[2])';
       const fractionSelector =
@@ -225,6 +242,8 @@ async function scrapePriceWithRetry(url, attempt = 1) {
       return null;
     }
 
+        // Clean the extracted price to a consistent float format
+
     function cleanPrice(rawText) {
       if (!rawText) return null;
 
@@ -249,6 +268,9 @@ async function scrapePriceWithRetry(url, attempt = 1) {
       console.warn("🚫 Price could not be extracted.");
     }
 
+
+
+        // ---------------- Seller Extraction ----------------
     let seller;
     const sellerSelectors = [
       {
@@ -325,6 +347,8 @@ async function scrapePriceWithRetry(url, attempt = 1) {
       return null;
     }
 
+
+        // ---------------- Delivery Time Extraction ----------------
     let deliveryTime;
 
     try {
@@ -365,12 +389,21 @@ async function scrapePriceWithRetry(url, attempt = 1) {
         console.log("❌ Delivery block contains a price. Skipping...");
         deliveryTime = undefined;
       } else if (deliveryText) {
+        // let cleanedText = deliveryText
+        //   .replace(/(?:Arrives|between|and|on)\s*/gi, "")
+        //   .replace(
+        //     /(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s*/gi,
+        //     ""
+        //   )
+        //   .replace(/\s*,\s*/g, " ")
+        //   .trim();
         let cleanedText = deliveryText
-          .replace(/(?:Arrives|between|and|on)\s*/gi, "")
+          // ✅ Remove weekdays like "Monday, ", "Friday " etc.
           .replace(
             /(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s*/gi,
             ""
           )
+          .replace(/(?:Arrives|between|and|on)\s*/gi, "")
           .replace(/\s*,\s*/g, " ")
           .trim();
 
@@ -386,36 +419,74 @@ async function scrapePriceWithRetry(url, attempt = 1) {
         const fixDateFormat = (text) => {
           const parts = text.trim().split(" ");
           if (parts.length === 2 && /^\d+$/.test(parts[0])) {
+            // "20 June" → "June 20"
             return `${parts[1]} ${parts[0]}`;
           }
-          return text;
+          if (
+            parts.length === 3 &&
+            parts[0].endsWith(",") &&
+            /^\d+$/.test(parts[1])
+          ) {
+            // "Friday, 20 June" → "June 20"
+            return `${parts[2]} ${parts[1]}`;
+          }
+          return text; // Already "June 20", etc.
         };
 
-        const rangeMatch = cleanedText.match(
-          /([A-Za-z]+\s\d{1,2})\s*[-–to]+\s*([A-Za-z]+\s\d{1,2})/i
-        );
-        const singleMatch = cleanedText.match(/^([A-Za-z]+\s\d{1,2})$/i);
-
-        if (rangeMatch) {
-          const part1 = fixDateFormat(rangeMatch[1]);
-          const part2 = fixDateFormat(rangeMatch[2]);
-          deliveryTime = `${part1} – ${part2}`;
-        } else if (singleMatch) {
-          deliveryTime = fixDateFormat(singleMatch[1]);
+        if (/^\d{1,2}\s[A-Za-z]+$/.test(cleanedText)) {
+          // Simple: "20 June"
+          deliveryTime = fixDateFormat(cleanedText.trim());
         } else {
-          const allMatches = cleanedText.match(/\b([A-Za-z]+)\s(\d{1,2})\b/g);
-          if (allMatches?.length === 2) {
-            const part1 = fixDateFormat(allMatches[0]);
-            const part2 = fixDateFormat(allMatches[1]);
+          // Handle: "4 - 10 July"
+          const partialRangeMatch = cleanedText.match(
+            /^(\d{1,2})\s*[-–to]+\s*(\d{1,2})\s+([A-Za-z]+)$/i
+          );
+
+          // Match: "20 June - 8 July" or "June 8 - July 20"
+          const rangeMatch =
+            cleanedText.match(
+              /(\d{1,2}\s[A-Za-z]+)\s*[-–to]+\s*(\d{1,2}\s[A-Za-z]+)/i
+            ) ||
+            cleanedText.match(
+              /([A-Za-z]+\s\d{1,2})\s*[-–to]+\s*([A-Za-z]+\s\d{1,2})/i
+            );
+
+          const singleMatch = cleanedText.match(/^([A-Za-z]+\s\d{1,2})$/i);
+          const weekdaySingleMatch = cleanedText.match(
+            /^[A-Za-z]+,\s\d{1,2}\s[A-Za-z]+$/i
+          );
+
+          if (partialRangeMatch) {
+            const day1 = partialRangeMatch[1];
+            const day2 = partialRangeMatch[2];
+            const month = partialRangeMatch[3];
+
+            const part1 = `${month} ${day1}`;
+            const part2 = `${month} ${day2}`;
             deliveryTime = `${part1} – ${part2}`;
-          } else if (allMatches?.length === 1) {
-            deliveryTime = fixDateFormat(allMatches[0]);
+          } else if (rangeMatch) {
+            const part1 = fixDateFormat(rangeMatch[1]);
+            const part2 = fixDateFormat(rangeMatch[2]);
+            deliveryTime = `${part1} – ${part2}`;
+          } else if (singleMatch) {
+            deliveryTime = fixDateFormat(singleMatch[1]);
+          } else if (weekdaySingleMatch) {
+            deliveryTime = fixDateFormat(weekdaySingleMatch[0]);
           } else {
-            console.log("⚠️ Unknown delivery format:", deliveryText);
-            deliveryTime = deliveryText;
+            // Fallback to all matches
+            const allMatches = cleanedText.match(/\b([A-Za-z]+)\s(\d{1,2})\b/g);
+            if (allMatches?.length === 2) {
+              const part1 = fixDateFormat(allMatches[0]);
+              const part2 = fixDateFormat(allMatches[1]);
+              deliveryTime = `${part1} – ${part2}`;
+            } else if (allMatches?.length === 1) {
+              deliveryTime = fixDateFormat(allMatches[0]);
+            } else {
+              console.log("⚠️ Unknown delivery format:", deliveryText);
+              deliveryTime = deliveryText;
+            }
           }
         }
-
         console.log("🧼 Cleaned Delivery Time:", deliveryTime);
       } else {
         console.log("❌ No delivery text found at all.");

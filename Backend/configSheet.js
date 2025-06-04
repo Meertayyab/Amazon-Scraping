@@ -1,5 +1,10 @@
 const SHEETS = [
   {
+    id: "1t2-z7MJTil4DGZe_ek20-kQ38ErxmoHFN3Uyxj-s-v4",
+    name: "Sheet1",
+    credentialFile: "credentials.json",
+  },
+  {
     id: "13D27c6hr0x9du1nQL5wxuIN6WfLdlQd_bbtFTnYFO6M",
     name: "10279",
     credentialFile: "credential.json",
